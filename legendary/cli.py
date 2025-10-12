@@ -5,11 +5,14 @@ import argparse
 import csv
 import json
 import logging
+import multiprocessing
 import os
 import shlex
 import subprocess
+import threading
 import time
 import webbrowser
+import re
 
 from collections import defaultdict, namedtuple
 from logging.handlers import QueueListener
@@ -365,7 +368,7 @@ class LegendaryCLI:
             if not game:
                 logger.fatal(f'Could not fetch metadata for "{args.app_name}" (check spelling/account ownership)')
                 exit(1)
-            manifest_data, _ = self.core.get_cdn_manifest(game, platform=args.platform)
+            manifest_data, _, _ = self.core.get_cdn_manifest(game, platform=args.platform)
 
         manifest = self.core.load_manifest(manifest_data)
         files = sorted(manifest.file_manifest_list.elements,
@@ -516,7 +519,7 @@ class LegendaryCLI:
                 igame.save_path = save_path
                 self.core.lgd.set_installed_game(igame.app_name, igame)
 
-            res, (dt_l, dt_r) = self.core.check_savegame_state(igame.save_path, latest_save.get(igame.app_name))
+            res, (dt_l, dt_r) = self.core.check_savegame_state(igame.save_path, igame.save_timestamp, latest_save.get(igame.app_name))
 
             if res == SaveGameStatus.NO_SAVE:
                 logger.info('No cloud or local savegame found.')
@@ -525,6 +528,30 @@ class LegendaryCLI:
             if res == SaveGameStatus.SAME_AGE and not (args.force_upload or args.force_download):
                 logger.info(f'Save game for "{igame.title}" is up to date, skipping...')
                 continue
+
+            if res == SaveGameStatus.CONFLICT and not (args.force_upload or args.force_download):
+                logger.info(f'Cloud save for "{igame.title}" is in conflict:')
+                logger.info(f'- Cloud save date: {dt_r.strftime("%Y-%m-%d %H:%M:%S")}')
+                logger.info(f'- Local save date: {dt_l.strftime("%Y-%m-%d %H:%M:%S")}')
+
+                if args.yes:
+                    logger.warning('Run the command again with appropriate force parameter to effectively pick the save')
+                    continue
+                else:
+                    result = get_int_choice('Which saves should be kept? Type the number corresponding to preferred action (remote - 1/local - 2/cancel - 3)',
+                                            default=3, min_choice=1, max_choice=3)
+                    if result == 1:
+                        self.core.download_saves(igame.app_name, save_dir=igame.save_path, clean_dir=True,
+                                                 manifest_name=latest_save[igame.app_name].manifest_name)
+                        igame.save_timestamp = time.time()
+                        self.core.lgd.set_installed_game(igame.app_name, igame)
+                    elif result == 2:
+                        self.core.upload_save(igame.app_name, igame.save_path, dt_l, args.disable_filters)
+                        igame.save_timestamp = time.time()
+                        self.core.lgd.set_installed_game(igame.app_name, igame)
+                    else:
+                        logger.info(f'Skipping action for: "{igame.title}"...')
+                        continue
 
             if (res == SaveGameStatus.REMOTE_NEWER and not args.force_upload) or args.force_download:
                 if res == SaveGameStatus.REMOTE_NEWER:  # only print this info if not forced
@@ -547,6 +574,8 @@ class LegendaryCLI:
                 logger.info('Downloading remote savegame...')
                 self.core.download_saves(igame.app_name, save_dir=igame.save_path, clean_dir=True,
                                          manifest_name=latest_save[igame.app_name].manifest_name)
+                igame.save_timestamp = time.time()
+                self.core.lgd.set_installed_game(igame.app_name, igame)
             elif res == SaveGameStatus.LOCAL_NEWER or args.force_upload:
                 if res == SaveGameStatus.LOCAL_NEWER:
                     logger.info(f'Local save for "{igame.title}" is newer')
@@ -566,6 +595,8 @@ class LegendaryCLI:
                         continue
                 logger.info('Uploading local savegame...')
                 self.core.upload_save(igame.app_name, igame.save_path, dt_l, args.disable_filters)
+                igame.save_timestamp = time.time()
+                self.core.lgd.set_installed_game(igame.app_name, igame)
 
     def launch_game(self, args, extra):
         app_name = self._resolve_aliases(args.app_name)
@@ -663,15 +694,18 @@ class LegendaryCLI:
         if args.json:
             return self._print_json(vars(params), args.pretty_json)
 
+        # Copying existing env vars is required on Windows, probably a good idea on Linux
+        full_env = os.environ.copy()
+        full_env.update(params.environment)
+
         full_params = list()
         full_params.extend(params.launch_command)
+        if 'LEGENDARY_WRAPPER_EXE' in full_env:
+            full_params.append(full_env['LEGENDARY_WRAPPER_EXE'].strip())
         full_params.append(os.path.join(params.game_directory, params.game_executable))
         full_params.extend(params.game_parameters)
         full_params.extend(params.user_parameters)
         full_params.extend(params.egl_parameters)
-        # Copying existing env vars is required on Windows, probably a good idea on Linux
-        full_env = os.environ.copy()
-        full_env.update(params.environment)
 
         if 'CX_BOTTLE' in full_env and any('SharedSupport/CrossOver' in p for p in params.launch_command):
             # if using crossover, unset WINEPREFIX
@@ -971,6 +1005,7 @@ class LegendaryCLI:
                                                           file_prefix_filter=args.file_prefix,
                                                           file_exclude_filter=args.file_exclude_prefix,
                                                           file_install_tag=args.install_tag,
+                                                          read_files=args.read_files,
                                                           dl_optimizations=args.order_opt,
                                                           dl_timeout=args.dl_timeout,
                                                           repair=args.repair_mode,
@@ -979,7 +1014,8 @@ class LegendaryCLI:
                                                           override_delta_manifest=args.override_delta_manifest,
                                                           preferred_cdn=args.preferred_cdn,
                                                           disable_https=args.disable_https,
-                                                          bind_ip=args.bind_ip)
+                                                          bind_ip=args.bind_ip,
+                                                          always_use_signed_urls=args.always_use_signed_urls)
 
         # game is either up-to-date or hasn't changed, so we have nothing to do
         if not analysis.dl_size:
@@ -1048,14 +1084,45 @@ class LegendaryCLI:
                 print('Aborting...')
                 exit(0)
 
+        ticket_a, ticket_b = multiprocessing.Pipe()
+        sign_a, sign_b = multiprocessing.Pipe()
+
+        def ticket_creator_thread():
+            t = threading.current_thread()
+            while not getattr(t, 'stop', False):
+                if ticket_b.poll(1):
+                    catalog_item_id, build_version, app_name, namespace, label, platform = ticket_b.recv()
+                    ticket_b.send(self.core.egs.get_download_ticket(catalog_item_id, build_version, app_name,
+                                                                    namespace, label, platform))
+
+        def chunk_url_sign_thread():
+            t = threading.current_thread()
+            while not getattr(t, 'stop', False):
+                if sign_b.poll(1):
+                    ticket, chunk_paths = sign_b.recv()
+                    signed_chunk_urls = self.core.egs.get_signed_chunk_urls(ticket, chunk_paths)
+                    if args.disable_https:
+                        for key in signed_chunk_urls:
+                            signed_chunk_urls[key] = signed_chunk_urls[key].replace('https://', 'http://')
+                    sign_b.send(signed_chunk_urls)
+
+
+        ticket_thread = threading.Thread(target=ticket_creator_thread)
+        sign_thread = threading.Thread(target=chunk_url_sign_thread)
+
         start_t = time.time()
 
         try:
             # set up logging stuff (should be moved somewhere else later)
             dlm.logging_queue = self.logging_queue
             dlm.proc_debug = args.dlm_debug
+            dlm.ticket_pipe = ticket_a
+            dlm.sign_pipe = sign_a
 
+            ticket_thread.start()
+            sign_thread.start()
             dlm.start()
+
             dlm.join()
         except Exception as e:
             end_t = time.time()
@@ -1125,6 +1192,11 @@ class LegendaryCLI:
                 self.core.install_game(old_igame)
 
             logger.info(f'Finished installation process in {end_t - start_t:.02f} seconds.')
+        finally:
+            ticket_thread.stop = True
+            sign_thread.stop = True
+            ticket_thread.join()
+            sign_thread.join()
 
     def _handle_postinstall(self, postinstall, igame, skip_prereqs=False):
         print('\nThis game lists the following prerequisites to be installed:')
@@ -1232,7 +1304,7 @@ class LegendaryCLI:
 
                 logger.warning('No manifest could be loaded, the file may be missing. Downloading the latest manifest.')
                 game = self.core.get_game(args.app_name, platform=igame.platform)
-                manifest_data, _ = self.core.get_cdn_manifest(game, igame.platform)
+                manifest_data, _, _ = self.core.get_cdn_manifest(game, igame.platform)
             else:
                 logger.critical(f'Manifest appears to be missing! To repair, run "legendary repair '
                                 f'{args.app_name} --repair-and-update", this will however redownload all files '
@@ -1644,6 +1716,7 @@ class LegendaryCLI:
 
         manifest_data = None
         entitlements = None
+        use_signed_url = None
         # load installed manifest or URI
         if args.offline or manifest_uri:
             if app_name and self.core.is_installed(app_name):
@@ -1663,7 +1736,7 @@ class LegendaryCLI:
             game.metadata = egl_meta
             # Get manifest if asset exists for current platform
             if args.platform in game.asset_infos:
-                manifest_data, _ = self.core.get_cdn_manifest(game, args.platform)
+                manifest_data, _, use_signed_url = self.core.get_cdn_manifest(game, args.platform)
 
         if game:
             game_infos = info_items['game']
@@ -1893,6 +1966,11 @@ class LegendaryCLI:
             manifest_info.append(InfoItem('Download size by install tag', 'tag_download_size',
                                           tag_download_size_human or 'N/A', tag_download_size))
 
+        if use_signed_url is not None:
+            info_items["manifest"].append(
+                InfoItem('Uses signed chunk URLs', 'use_signed_urls', use_signed_url, use_signed_url)
+            )
+
         if not args.json:
             def print_info_item(item: InfoItem):
                 if item.value is None:
@@ -2037,6 +2115,8 @@ class LegendaryCLI:
                 break
             else:
                 logger.error('No linked ubisoft account found! Link your accounts via your browser and try again.')
+                if args.summary:
+                    return
                 webbrowser.open('https://www.epicgames.com/id/link/ubisoft')
                 print('If the web page did not open automatically, please manually open the following URL: '
                       'https://www.epicgames.com/id/link/ubisoft')
@@ -2051,7 +2131,7 @@ class LegendaryCLI:
             owned_entitlements = {i['entitlementName'] for i in entitlements}
 
             uplay_games = []
-            activated = 0
+            activated = []
             for game in games:
                 for dlc_data in game.metadata.get('dlcItemList', []):
                     if dlc_data['entitlementName'] not in owned_entitlements:
@@ -2072,12 +2152,34 @@ class LegendaryCLI:
                 if game.partner_link_type != 'ubisoft':
                     continue
                 if game.partner_link_id in redeemed:
-                    activated += 1
+                    activated.append(game)
                     continue
                 uplay_games.append(game)
+            
+            if args.summary:
+                summary = dict(activated=[], redeemable=[])
+                if args.json:
+                    for game in uplay_games:
+                        summary['redeemable'].append({'app_name': game.app_name, 'title': game.app_title})
+                    for game in activated:
+                        summary['activated'].append({'app_name': game.app_name, 'title': game.app_title})
+                    print(json.dumps(summary))
+                else:
+                    if len(activated):
+                        print('Games that can be redeemed:')
+                    for game in activated:
+                        summary['activated'].append({'app_name': game.app_name, 'title': game.app_title})
+                        print(f' * {game.app_title} (App name: {game.app_name})')
+                    if len(uplay_games):
+                        print('Games that can be redeemed:')
+                    for game in uplay_games:
+                        summary['redeemable'].append({'app_name': game.app_name, 'title': game.app_title})
+                        print(f' * {game.app_title} (App name: {game.app_name})')
+
+                return
 
             if not uplay_games:
-                logger.info(f'All of your {activated} titles have already been activated on your Ubisoft account.')
+                logger.info(f'All of your {len(activated)} titles have already been activated on your Ubisoft account.')
                 return
 
             logger.info(f'Found {len(uplay_games)} game(s) to redeem:')
@@ -2626,6 +2728,58 @@ class LegendaryCLI:
         self.core.install_game(igame)
         logger.info('Finished.')
 
+    def eula(self, args):
+        if not self.core.login():
+            logger.error('Login failed! Unable to check for EULAs.')
+            exit(1)
+        app_name = self._resolve_aliases(args.app_name)
+        game = self.core.get_game(app_name, update_meta=True)
+        if not game:
+            self.logger.error(f'No game found for "{app_name}"')
+            return
+        eulas = game.metadata.get('eulaIds') or ['$']
+
+        pattern = r'\w+'
+        keys = []
+        for eula in eulas:
+            keys += re.findall(pattern, eula)
+
+        not_accepted_eulas = []
+        for key in keys:
+            if args.skip_epic and key == 'egstore':
+                continue
+            self.logger.debug(f'Fetching eula status for "{key}"')
+            eula = self.core.egs.eula_get_status(key)
+            if eula:
+                not_accepted_eulas.append(eula)
+
+        accepted = False
+
+        if not args.json:
+            for eula in not_accepted_eulas:
+                title = eula.get('title')
+                url = eula.get('url')
+                print(f' * {title} - {url}')
+            print(f'EULA(s) to accept: {len(not_accepted_eulas)}')
+            if not_accepted_eulas:
+                accepted = args.yes or get_boolean_choice('Mark them as accepted?')
+        else:
+            json_out = not_accepted_eulas
+            self._print_json(json_out, args.pretty_json)
+            accepted = args.yes
+
+        if accepted:
+            for eula in not_accepted_eulas:
+                key = eula.get('key')
+                version = eula.get('version')
+                locale = eula.get('locale')
+                self.logger.debug(f'Accepting "{key}" version {version}')
+                try:
+                    self.core.egs.eula_accept(key, version, locale)
+                except Exception as e:
+                    self.logger.error(f"Failed to accept EULA {key} {e!r}")
+                    return
+
 
 def main():
     # Set output encoding to UTF-8 if not outputting to a terminal
@@ -2680,6 +2834,7 @@ def main():
     uninstall_parser = subparsers.add_parser('uninstall', help='Uninstall (delete) a game')
     verify_parser = subparsers.add_parser('verify', help='Verify a game\'s local files',
                                           aliases=('verify-game',), hide_aliases=True)
+    eula_parser = subparsers.add_parser('eula', help='Check for unaccepted EULA(s) of a given game')
 
     # hidden commands have no help text
     get_token_parser = subparsers.add_parser('get-token')
@@ -2768,6 +2923,8 @@ def main():
                                 type=str, help='Exclude files starting with <prefix> (case insensitive)')
     install_parser.add_argument('--install-tag', dest='install_tag', action='append', metavar='<tag>',
                                 type=str, help='Only download files with the specified install tag')
+    install_parser.add_argument('--read-files', dest='read_files', action='store_true',
+                                help='Read duplicated parts from already saved files, do not keep them in memory')
     install_parser.add_argument('--enable-reordering', dest='order_opt', action='store_true',
                                 help='Enable reordering optimization to reduce RAM requirements '
                                      'during download (may have adverse results for some titles)')
@@ -2799,6 +2956,8 @@ def main():
                                 help='Do not ask about installing DLCs.')
     install_parser.add_argument('--bind', dest='bind_ip', action='store', metavar='<IPs>', type=str,
                                 help='Comma-separated list of IPs to bind to for downloading')
+    install_parser.add_argument('--always-use-signed-urls', dest='always_use_signed_urls', action='store_true',
+                                help='Always use signed chunk URLs, even if the Epic API indicates not to')
 
     uninstall_parser.add_argument('--keep-files', dest='keep_files', action='store_true',
                                   help='Keep files but remove game from Legendary database')
@@ -2963,6 +3122,10 @@ def main():
     info_parser.add_argument('--platform', dest='platform', action='store', metavar='<Platform>', type=str,
                              help='Platform to fetch info for (default: installed or Mac on macOS, Windows otherwise)')
 
+    activate_parser.add_argument('-s','--summary', dest='summary', action='store_true',
+                                 help='Only print information about the activation status (uplay)')
+    activate_parser.add_argument('-j', '--json', dest='json', action='store_true',
+                                 help='Print summary data in JSON format')
     store_group = activate_parser.add_mutually_exclusive_group(required=True)
     store_group.add_argument('-U', '--uplay', dest='uplay', action='store_true',
                              help='Activate Uplay/Ubisoft Connect titles on your Ubisoft account '
@@ -3012,6 +3175,12 @@ def main():
 
     move_parser.add_argument('--skip-move', dest='skip_move', action='store_true',
                              help='Only change legendary database, do not move files (e.g. if already moved)')
+
+    eula_parser.add_argument('app_name', metavar='<App Name>', help='Name of the app')
+    eula_parser.add_argument('--skip-epic', dest='skip_epic', action='store_true',
+                                  help='Skip checking for egstore EULA')
+    eula_parser.add_argument('--json', dest='json', action='store_true',
+                                  help='Output information in JSON format')
 
     args, extra = parser.parse_known_args()
 
@@ -3113,6 +3282,8 @@ def main():
             cli.crossover_setup(args)
         elif args.subparser_name == 'move':
             cli.move(args)
+        elif args.subparser_name == 'eula':
+            cli.eula(args)
     except KeyboardInterrupt:
         logger.info('Command was aborted via KeyboardInterrupt, cleaning up...')
 

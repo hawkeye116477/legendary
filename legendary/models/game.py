@@ -192,6 +192,8 @@ class InstalledGame:
     uninstaller: Optional[Dict] = None
     requires_ot: bool = False
     save_path: Optional[str] = None
+    save_timestamp: Optional[float] = None
+    use_signed_url: bool = False
 
     @classmethod
     def from_json(cls, json):
@@ -212,12 +214,14 @@ class InstalledGame:
         tmp.requires_ot = json.get('requires_ot', False)
         tmp.is_dlc = json.get('is_dlc', False)
         tmp.save_path = json.get('save_path', None)
+        tmp.save_timestamp = json.get('save_timestamp', None)
         tmp.manifest_path = json.get('manifest_path', '')
         tmp.needs_verification = json.get('needs_verification', False) is True
         tmp.platform = json.get('platform', 'Windows')
         tmp.install_size = json.get('install_size', 0)
         tmp.egl_guid = json.get('egl_guid', '')
         tmp.install_tags = json.get('install_tags', [])
+        tmp.use_signed_url = json.get('use_signed_url', False)
         return tmp
 
 
@@ -237,6 +241,7 @@ class SaveGameStatus(Enum):
     REMOTE_NEWER = 1
     SAME_AGE = 2
     NO_SAVE = 3
+    CONFLICT = 4
 
 
 class VerifyResult(Enum):

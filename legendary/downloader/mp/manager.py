@@ -9,18 +9,22 @@ import time
 from collections import Counter, defaultdict, deque
 from logging.handlers import QueueHandler
 from multiprocessing import cpu_count, Process, Queue as MPQueue
+from multiprocessing.connection import Connection
 from multiprocessing.shared_memory import SharedMemory
 from queue import Empty
 from sys import exit
 from threading import Condition, Thread
+from time import sleep
 
 from legendary.downloader.mp.workers import DLWorker, FileWorker
 from legendary.models.downloading import *
-from legendary.models.manifest import ManifestComparison, Manifest
+from legendary.models.game import GameAsset
+from legendary.models.manifest import ManifestComparison, Manifest, CDL, ChunkInfo
 
 
 class DLManager(Process):
-    def __init__(self, download_dir, base_url, cache_dir=None, status_q=None,
+    def __init__(self, download_dir, base_url, use_signed_chunk_urls: bool, asset: GameAsset,
+                 cache_dir=None, status_q=None,
                  max_workers=0, update_interval=1.0, dl_timeout=10, resume_file=None,
                  max_shared_memory=1024 * 1024 * 1024, bind_ip=None):
         super().__init__(name='DLManager')
@@ -30,6 +34,13 @@ class DLManager(Process):
         self.base_url = base_url
         self.dl_dir = download_dir
         self.cache_dir = cache_dir or os.path.join(download_dir, '.cache')
+        self.use_signed_chunk_urls = use_signed_chunk_urls
+        self.asset = asset
+        # Called with (<ticket>, <list of chunk paths>), expected to return signed chunk URLs
+        self.sign_pipe: Optional[Connection] = None
+        # Called with (<catalogItemId>, <buildVersion>, <appName>, <namespace>, <label>, <platform>), expected to return
+        # ticket for signing chunk URLs (see `DownloadTicket`) in JSON format
+        self.ticket_pipe: Optional[Connection] = None
 
         # All the queues!
         self.logging_queue = None
@@ -37,6 +48,7 @@ class DLManager(Process):
         self.writer_queue = None
         self.dl_result_q = None
         self.writer_result_q = None
+        self.signed_chunks_q: Optional[MPQueue[tuple[ChunkInfo | TerminateWorkerTask, Optional[str]]]] = None
 
         # Worker stuff
         self.max_workers = max_workers or min(cpu_count() * 2, 16)
@@ -44,14 +56,14 @@ class DLManager(Process):
         self.bind_ips = [] if not bind_ip else bind_ip.split(',')
 
         # Analysis stuff
-        self.analysis = None
-        self.tasks = deque()
-        self.chunks_to_dl = deque()
-        self.chunk_data_list = None
+        self.analysis: Optional[AnalysisResult] = None
+        self.tasks: deque[FileTask | ChunkTask] = deque()
+        self.chunks_to_dl: deque[int] = deque()
+        self.chunk_data_list: Optional[CDL] = None
 
         # shared memory stuff
         self.max_shared_memory = max_shared_memory  # 1 GiB by default
-        self.sms = deque()
+        self.sms: deque[SharedMemorySegment] = deque()
         self.shared_memory = None
 
         # Interval for log updates and pushing updates to the queue
@@ -82,6 +94,7 @@ class DLManager(Process):
     def run_analysis(self, manifest: Manifest, old_manifest: Manifest = None,
                      patch=True, resume=True, file_prefix_filter=None,
                      file_exclude_filter=None, file_install_tag=None,
+                     read_files=False,
                      processing_optimization=False) -> AnalysisResult:
         """
         Run analysis on manifest and old manifest (if not None) and return a result
@@ -94,6 +107,7 @@ class DLManager(Process):
         :param file_prefix_filter: Only download files that start with this prefix
         :param file_exclude_filter: Exclude files with this prefix from download
         :param file_install_tag: Only install files with the specified tag
+        :param read_files: Allow reading from already finished files
         :param processing_optimization: Attempt to optimize processing order and RAM usage
         :return: AnalysisResult
         """
@@ -318,6 +332,30 @@ class DLManager(Process):
                             analysis_res.reuse_size += cp.size
                             break
 
+        # determine whether a chunk part is currently in written files
+        reusable_written = defaultdict(dict)
+        if read_files:
+            self.log.debug('Analyzing manifest for re-usable chunks in saved files...')
+            cur_written_cps = defaultdict(list)
+            for cur_file in fmlist:
+                cur_file_cps = dict()
+                cur_file_offset = 0
+                for cp in cur_file.chunk_parts:
+                    key = (cp.guid_num, cp.offset, cp.size)
+                    for wr_file_name, wr_file_offset, wr_cp_offset, wr_cp_end_offset in cur_written_cps[cp.guid_num]:
+                        # check if new chunk part is wholly contained in a written chunk part
+                        cur_cp_end_offset = cp.offset + cp.size
+                        if wr_cp_offset <= cp.offset and wr_cp_end_offset >= cur_cp_end_offset:
+                            references[cp.guid_num] -= 1
+                            reuse_offset = wr_file_offset + (cp.offset - wr_cp_offset)
+                            reusable_written[cur_file.filename][key] = (wr_file_name, reuse_offset)
+                            break
+                    cur_file_cps[cp.guid_num] = (cur_file.filename, cur_file_offset, cp.offset, cp.offset + cp.size)
+                    cur_file_offset += cp.size
+
+                for guid, value in cur_file_cps.items():
+                    cur_written_cps[guid].append(value)
+
         last_cache_size = current_cache_size = 0
         # set to determine whether a file is currently cached or not
         cached = set()
@@ -338,6 +376,7 @@ class DLManager(Process):
                 continue
 
             existing_chunks = re_usable.get(current_file.filename, None)
+            written_chunks = reusable_written.get(current_file.filename, None)
             chunk_tasks = []
             reused = 0
 
@@ -345,10 +384,13 @@ class DLManager(Process):
                 ct = ChunkTask(cp.guid_num, cp.offset, cp.size)
 
                 # re-use the chunk from the existing file if we can
-                if existing_chunks and (cp.guid_num, cp.offset, cp.size) in existing_chunks:
+                key = (cp.guid_num, cp.offset, cp.size)
+                if existing_chunks and key in existing_chunks:
                     reused += 1
                     ct.chunk_file = current_file.filename
-                    ct.chunk_offset = existing_chunks[(cp.guid_num, cp.offset, cp.size)]
+                    ct.chunk_offset = existing_chunks[key]
+                elif written_chunks and key in written_chunks:
+                    ct.chunk_file, ct.chunk_offset = written_chunks[key]
                 else:
                     # add to DL list if not already in it
                     if cp.guid_num not in chunks_in_dl_list:
@@ -433,26 +475,80 @@ class DLManager(Process):
 
         return analysis_res
 
-    def download_job_manager(self, task_cond: Condition, shm_cond: Condition):
+    def chunk_signing_manager(self, sig_chunks_cond: Condition):
+        if self.use_signed_chunk_urls:
+            self._do_chunk_signing(sig_chunks_cond)
+            return
+
+        # If we're not using signed URLs, just pretend the raw chunks are the signed ones
+        for guid in self.chunks_to_dl:
+            self.signed_chunks_q.put((self.chunk_data_list.get_chunk_by_guid(guid), None))
+
+
+    def _do_chunk_signing(self, sig_chunks_cond: Condition):
+        ticket = self._gen_ticket()
         while self.chunks_to_dl and self.running:
-            while self.active_tasks < self.max_workers * 2 and self.chunks_to_dl:
+            if not self.signed_chunks_q.empty():
+                sleep(1)
+                continue
+
+            self.log.debug('Fetching more chunk URLs...')
+            num_of_chunks_to_fetch = min(len(self.chunks_to_dl), 50)
+            unprocessed_chunk_ids = list(self.chunks_to_dl.popleft() for _ in range(num_of_chunks_to_fetch))
+            unprocessed_chunks = list(self.chunk_data_list.get_chunk_by_guid(guid) for guid in unprocessed_chunk_ids)
+
+            if ticket.remaining_time < datetime.timedelta(minutes=5):
+                self.log.debug('Refreshing ticket')
+                ticket = self._gen_ticket()
+
+            self.sign_pipe.send((ticket.signedTicket, list(c.path for c in unprocessed_chunks)))
+
+            signed_urls: dict[str, str] = self.sign_pipe.recv()
+            for chunk in unprocessed_chunks:
+                signed_url = signed_urls[chunk.path]
+                self.signed_chunks_q.put((chunk, signed_url))
+                with sig_chunks_cond:
+                    sig_chunks_cond.notify()
+
+    def _gen_ticket(self) -> DownloadTicket:
+        # TODO: Verify this works on all games
+        label, platform = self.asset.label_name.split('-')
+        self.ticket_pipe.send((
+            self.asset.catalog_item_id, self.asset.build_version, self.asset.app_name, self.asset.namespace,
+            label, platform
+        ))
+        return DownloadTicket.from_json(self.ticket_pipe.recv())
+
+    def download_job_manager(self, task_cond: Condition, shm_cond: Condition, sig_chunks_cond: Condition):
+        terminate = False
+        while self.running and not terminate:
+            no_shm = False
+            no_signed_chunks = False
+            while self.active_tasks < self.max_workers * 2:
                 try:
                     sms = self.sms.popleft()
-                    no_shm = False
                 except IndexError:  # no free cache
                     no_shm = True
                     break
 
-                c_guid = self.chunks_to_dl.popleft()
-                chunk = self.chunk_data_list.get_chunk_by_guid(c_guid)
+                try:
+                    chunk, url = self.signed_chunks_q.get(False, 3.0)
+                except Empty:
+                    no_signed_chunks = True
+                    break
+
+                if isinstance(chunk, TerminateWorkerTask):
+                    terminate = True
+                    break
+
                 self.log.debug(f'Adding {chunk.guid_num} (active: {self.active_tasks})')
                 try:
-                    self.dl_worker_queue.put(DownloaderTask(url=self.base_url + '/' + chunk.path,
-                                                            chunk_guid=c_guid, shm=sms),
+                    self.dl_worker_queue.put(DownloaderTask(url=url or (self.base_url + '/' + chunk.path),
+                                                            chunk_guid=chunk.guid_num, shm=sms),
                                              timeout=1.0)
                 except Exception as e:
                     self.log.warning(f'Failed to add to download queue: {e!r}')
-                    self.chunks_to_dl.appendleft(c_guid)
+                    self.signed_chunks_q.put((chunk, url))
                     break
 
                 self.active_tasks += 1
@@ -468,6 +564,11 @@ class DLManager(Process):
                 with shm_cond:
                     self.log.debug('Waiting for more shared memory...')
                     shm_cond.wait(timeout=1.0)
+
+            if no_signed_chunks:
+                with sig_chunks_cond:
+                    self.log.debug('Waiting for more signed cunks...')
+                    sig_chunks_cond.wait(timeout=1.0)
 
         self.log.debug('Download Job Manager quitting...')
 
@@ -629,8 +730,14 @@ class DLManager(Process):
                     child.terminate()
 
             # clean up all the queues, otherwise this process won't terminate properly
-            for name, q in zip(('Download jobs', 'Writer jobs', 'Download results', 'Writer results'),
-                               (self.dl_worker_queue, self.writer_queue, self.dl_result_q, self.writer_result_q)):
+            queues: list[tuple[str, Optional[MPQueue]]] = [
+                ('Download jobs', self.dl_worker_queue),
+                ('Writer jobs', self.writer_queue),
+                ('Download results', self.dl_result_q),
+                ('Writer results', self.writer_result_q),
+                ('Signed chunks', self.signed_chunks_q)
+            ]
+            for name, q in queues:
                 self.log.debug(f'Cleaning up queue "{name}"')
                 try:
                     while True:
@@ -638,6 +745,16 @@ class DLManager(Process):
                 except Empty:
                     q.close()
                     q.join_thread()
+
+            # clean up connections
+            pipes = [self.sign_pipe, self.ticket_pipe]
+            for pipe in pipes:
+                if pipe is not None:
+                    pipe.close()
+
+            self.shared_memory.close()
+            self.shared_memory.unlink()
+            self.shared_memory = None
 
     def run_real(self):
         self.shared_memory = SharedMemory(create=True, size=self.max_shared_memory)
@@ -656,6 +773,7 @@ class DLManager(Process):
         self.writer_queue = MPQueue(-1)
         self.dl_result_q = MPQueue(-1)
         self.writer_result_q = MPQueue(-1)
+        self.signed_chunks_q = MPQueue(-1)
 
         self.log.info(f'Starting download workers...')
 
@@ -692,11 +810,13 @@ class DLManager(Process):
         # synchronization conditions
         shm_cond = Condition()
         task_cond = Condition()
-        self.conditions = [shm_cond, task_cond]
+        sig_chunks_cond = Condition()
+        self.conditions = [shm_cond, task_cond, sig_chunks_cond]
 
         # start threads
         s_time = time.time()
-        self.threads.append(Thread(target=self.download_job_manager, args=(task_cond, shm_cond)))
+        self.threads.append(Thread(target=self.chunk_signing_manager, args=(sig_chunks_cond,)))
+        self.threads.append(Thread(target=self.download_job_manager, args=(task_cond, shm_cond, sig_chunks_cond)))
         self.threads.append(Thread(target=self.dl_results_handler, args=(task_cond,)))
         self.threads.append(Thread(target=self.fw_results_handler, args=(shm_cond,)))
 
@@ -775,6 +895,7 @@ class DLManager(Process):
 
         self.log.info('Waiting for installation to finish...')
         self.writer_queue.put_nowait(TerminateWorkerTask())
+        self.signed_chunks_q.put_nowait((TerminateWorkerTask(), None))
 
         writer_p.join(timeout=10.0)
         if writer_p.exitcode is None:

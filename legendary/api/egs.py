@@ -22,17 +22,18 @@ class EPCAPI:
     _label = 'Live-EternalKnight'
 
     _oauth_host = 'account-public-service-prod03.ol.epicgames.com'
+    # FIXME: Check whether everything using this can also use `_launcher_host_2`, then replace this with it
     _launcher_host = 'launcher-public-service-prod06.ol.epicgames.com'
+    _launcher_host_2 = 'launcher-public-service-prod.ak.epicgames.com'
     _entitlements_host = 'entitlement-public-service-prod08.ol.epicgames.com'
+    _eulatracking_host = 'eulatracking-public-service-prod06.ol.epicgames.com'
     _catalog_host = 'catalog-public-service-prod06.ol.epicgames.com'
     _ecommerce_host = 'ecommerceintegration-public-service-ecomprod02.ol.epicgames.com'
     _datastorage_host = 'datastorage-public-service-liveegs.live.use1a.on.epicgames.com'
     _library_host = 'library-service.live.use1a.on.epicgames.com'
-    # Using the actual store host with a user-agent newer than 14.0.8 leads to a CF verification page,
-    # but the dedicated graphql host works fine.
-    # _store_gql_host = 'launcher.store.epicgames.com'
-    _store_gql_host = 'graphql.epicgames.com'
+    _store_gql_host = 'launcher.store.epicgames.com'
     _artifact_service_host = 'artifact-public-service-prod.beee.live.use1a.on.epicgames.com'
+    _artifact_delivery_service_host = 'artifact-delivery-service-public-prod.ol.epicgames.com'
 
     def __init__(self, lc='en', cc='US', timeout=10.0):
         self.log = logging.getLogger('EPCAPI')
@@ -232,6 +233,23 @@ class EPCAPI:
         r.raise_for_status()
         return r.json()
 
+    def get_download_ticket(self, catalog_item_id: str, build_version: str, app_name: str,
+                            namespace: str, label='Live', platform='Windows'):
+        r = self.session.post(f'https://{self._launcher_host_2}/launcher/api/public/assets/v2/ticket',
+                              json=dict(catalogItemId=catalog_item_id, buildVersion=build_version, appName=app_name,
+                                        namespace=namespace, label=label, platform=platform),
+                              timeout=self.request_timeout)
+        r.raise_for_status()
+        return r.json()
+
+    def get_signed_chunk_urls(self, ticket: str, paths: list[str]) -> dict[str, str]:
+        user_id = self.user.get('account_id')
+        r = self.session.post(f'https://{self._artifact_delivery_service_host}/artifact-delivery/api/public/v1/'
+                              f'delivery/account/{user_id}/downloadurls',
+                              json=dict(signedTicket=ticket, chunkIds=paths, deltaId='', clientMetrics={}))
+        r.raise_for_status()
+        return r.json()
+
     def get_library_items(self, include_metadata=True):
         records = []
         r = self.session.get(f'https://{self._library_host}/library/api/public/items',
@@ -310,3 +328,23 @@ class EPCAPI:
                               timeout=self.request_timeout)
         r.raise_for_status()
         return r.json()
+
+    def eula_get_status(self, eula_id):
+        user_id = self.user.get('account_id')
+        r = self.session.get(f'https://{self._eulatracking_host}/eulatracking/api/public/agreements/{eula_id}/account/{user_id}', 
+                             params=dict(locale=self.language_code))
+
+        if r.status_code == 204:
+            return None
+        r.raise_for_status()
+        return r.json()
+
+    def eula_accept(self, eula_id, version, locale=None):
+        user_id = self.user.get('account_id')
+        locale = locale or self.language_code
+        r = self.session.post(f'https://{self._eulatracking_host}/eulatracking/api/public/agreements/{eula_id}/version/{version}/account/{user_id}/accept',
+                              params=dict(locale=locale))
+        
+        r.raise_for_status()
+
+
