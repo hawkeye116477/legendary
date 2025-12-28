@@ -3,6 +3,7 @@
 import json
 import shlex
 import shutil
+import base64
 
 from base64 import b64decode
 from collections import defaultdict
@@ -182,7 +183,7 @@ class LegendaryCore:
             self.log.error(f'Logging in failed with {e!r}, please try again.')
             return False
 
-    def _login(self, lock, force_refresh=False) -> bool:
+    def _login(self, lock, force_refresh=False, only_resume_session=False) -> bool:
         """
         Attempts logging in with existing credentials.
 
@@ -231,29 +232,40 @@ class LegendaryCore:
                     return True
                 except InvalidCredentialsError as e:
                     self.log.warning(f'Resuming failed due to invalid credentials: {e!r}')
+                    if only_resume_session:
+                        return False
                 except Exception as e:
                     self.log.warning(f'Resuming failed for unknown reason: {e!r}')
+                    if only_resume_session:
+                        return False
                 # If verify fails just continue the normal authentication process
                 self.log.info('Falling back to using refresh token...')
 
-        try:
-            self.log.info('Logging in...')
-            userdata = self.egs.start_session(lock.data['refresh_token'])
-        except InvalidCredentialsError:
-            self.log.error('Stored credentials are no longer valid! Please login again.')
-            lock.clear()
-            return False
-        except (HTTPError, ConnectionError) as e:
-            self.log.error(f'HTTP request for login failed: {e!r}, please try again later.')
-            return False
-
-        lock.data = userdata
-        self.logged_in = True
+        if not only_resume_session:
+            try:
+                self.log.info('Logging in...')
+                userdata = self.egs.start_session(lock.data['refresh_token'])
+            except InvalidCredentialsError:
+                self.log.error('Stored credentials are no longer valid! Please login again.')
+                lock.clear()
+                return False
+            except (HTTPError, ConnectionError) as e:
+                self.log.error(f'HTTP request for login failed: {e!r}, please try again later.')
+                return False
+            lock.data = userdata
+            self.logged_in = True
         return True
 
-    def login(self, force_refresh=False) -> bool:
-        with self.lgd.userdata_lock as lock:
-            return self._login(lock, force_refresh=force_refresh)
+    def login(self, force_refresh=False, user_data_json = "") -> bool:
+        if not user_data_json:
+            with self.lgd.userdata_lock as lock:
+                return self._login(lock, force_refresh=force_refresh)
+        else:
+            class DummyLock:
+                def __init__(self, data):
+                    self.data = data
+            lock = DummyLock(user_data_json)
+            return self._login(lock, force_refresh=force_refresh, only_resume_session=True)
 
     def update_check_enabled(self):
         return not self.lgd.config.getboolean('Legendary', 'disable_update_check', fallback=False)

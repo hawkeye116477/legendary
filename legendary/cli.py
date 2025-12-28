@@ -13,6 +13,7 @@ import threading
 import time
 import webbrowser
 import re
+import base64
 
 from collections import defaultdict, namedtuple
 from logging.handlers import QueueListener
@@ -81,7 +82,7 @@ class LegendaryCLI:
 
         try:
             logger.info('Testing existing login data if present...')
-            if self.core.login():
+            if self.core.login(user_data_json=args.user_data_json):
                 logger.info('Stored credentials are still valid, if you wish to switch to a different '
                             'account, run "legendary auth --delete" and try again.')
                 return
@@ -191,7 +192,7 @@ class LegendaryCLI:
 
     def list_games(self, args):
         logger.info('Logging in...')
-        if not self.core.login():
+        if not self.core.login(user_data_json=args.user_data_json):
             logger.error('Login failed, cannot continue!')
             exit(1)
 
@@ -273,7 +274,7 @@ class LegendaryCLI:
     def list_installed(self, args):
         if args.check_updates:
             logger.info('Logging in to check for updates...')
-            if not self.core.login():
+            if not self.core.login(user_data_json=args.user_data_json):
                 logger.error('Login failed! Not checking for updates.')
             else:
                 # Update assets for all platforms currently installed
@@ -361,7 +362,7 @@ class LegendaryCLI:
             manifest_data, _ = self.core.get_installed_manifest(args.app_name)
         else:
             logger.info(f'Logging in and downloading manifest for {args.app_name}')
-            if not self.core.login():
+            if not self.core.login(user_data_json=args.user_data_json):
                 logger.error('Login failed! Cannot continue with download process.')
                 exit(1)
             game = self.core.get_game(args.app_name, update_meta=True)
@@ -409,7 +410,7 @@ class LegendaryCLI:
                 logger.info(f'Install tags: {", ".join(sorted(install_tags))}')
 
     def list_saves(self, args):
-        if not self.core.login():
+        if not self.core.login(user_data_json=args.user_data_json):
             logger.error('Login failed! Cannot continue with download process.')
             exit(1)
         # update game metadata
@@ -432,21 +433,21 @@ class LegendaryCLI:
             print(' +', save.manifest_name)
 
     def download_saves(self, args):
-        if not self.core.login():
+        if not self.core.login(user_data_json=args.user_data_json):
             logger.error('Login failed! Cannot continue with download process.')
             exit(1)
         logger.info(f'Downloading saves to "{self.core.get_default_install_dir()}"')
         self.core.download_saves(self._resolve_aliases(args.app_name))
 
     def clean_saves(self, args):
-        if not self.core.login():
+        if not self.core.login(user_data_json=args.user_data_json):
             logger.error('Login failed! Cannot continue with download process.')
             exit(1)
         logger.info('Cleaning saves...')
         self.core.clean_saves(self._resolve_aliases(args.app_name), args.delete_incomplete)
 
     def sync_saves(self, args):
-        if not self.core.login():
+        if not self.core.login(user_data_json=args.user_data_json):
             logger.error('Login failed! Cannot continue with download process.')
             exit(1)
 
@@ -639,7 +640,7 @@ class LegendaryCLI:
         args.offline = self.core.is_offline_game(app_name) or args.offline
         if not args.offline:
             logger.info('Logging in...')
-            if not self.core.login():
+            if not self.core.login(user_data_json=args.user_data_json):
                 logger.error('Login failed, cannot continue!')
                 exit(1)
 
@@ -764,7 +765,7 @@ class LegendaryCLI:
         # login is not required to launch the game, but linking does require it.
         if not args.offline:
             logger.info('Logging in...')
-            if not self.core.login():
+            if not self.core.login(user_data_json=args.user_data_json):
                 logger.error('Login failed, cannot continue!')
                 exit(1)
 
@@ -870,7 +871,7 @@ class LegendaryCLI:
             args.no_install = args.repair_and_update is False
             repair_file = os.path.join(self.core.lgd.get_tmp_path(), f'{args.app_name}.repair')
 
-        if not self.core.login():
+        if not self.core.login(user_data_json=args.user_data_json):
             logger.error('Login failed! Cannot continue with download process.')
             exit(1)
 
@@ -1401,7 +1402,7 @@ class LegendaryCLI:
             logger.error('Game is already installed!')
             return
 
-        if not self.core.login():
+        if not self.core.login(user_data_json=args.user_data_json):
             logger.error('Log in failed!')
             return
 
@@ -1639,7 +1640,7 @@ class LegendaryCLI:
     def status(self, args):
         if not args.offline:
             try:
-                if not self.core.login():
+                if not self.core.login(user_data_json=args.user_data_json):
                     logger.error('Log in failed!')
                     exit(1)
             except ValueError:
@@ -1691,7 +1692,7 @@ class LegendaryCLI:
 
         if not args.offline and not manifest_uri:
             try:
-                if not self.core.login():
+                if not self.core.login(user_data_json=args.user_data_json):
                     logger.error('Log in failed!')
                     exit(1)
             except ValueError:
@@ -2101,7 +2102,7 @@ class LegendaryCLI:
         logger.info(f'Cleanup complete! Removed {(before - after) / 1024 / 1024:.02f} MiB.')
 
     def activate(self, args):
-        if not self.core.login():
+        if not self.core.login(user_data_json=args.user_data_json):
             logger.error('Login failed!')
             return
 
@@ -2729,7 +2730,7 @@ class LegendaryCLI:
         logger.info('Finished.')
 
     def eula(self, args):
-        if not self.core.login():
+        if not self.core.login(user_data_json=args.user_data_json):
             logger.error('Login failed! Unable to check for EULAs.')
             exit(1)
         app_name = self._resolve_aliases(args.app_name)
@@ -2802,6 +2803,7 @@ def main():
     parser.add_argument('-A', '--api-timeout', dest='api_timeout', action='store',
                         type=float, default=10, metavar='<seconds>',
                         help='API HTTP request timeout (default: 10 seconds)')
+    parser.add_argument("--secret-user-data", dest="user_data_json", help="Provide userdata in base64 encoded json format", type=str)
 
     # all the commands
     subparsers = parser.add_subparsers(title='Commands', dest='subparser_name', metavar='<command>')
@@ -3213,6 +3215,14 @@ def main():
 
     cli = LegendaryCLI(override_config=args.config_file, api_timeout=args.api_timeout)
     ql = cli.setup_threaded_logging()
+
+    if secret_data_env := os.environ.get("LEGENDARY_SECRET_USER_DATA"):
+        args.user_data_json = secret_data_env
+
+    if args.user_data_json:
+        args.user_data_json = base64.b64decode(args.user_data_json).decode("utf-8")
+        args.user_data_json = json.loads(args.user_data_json)
+        cli.core.lgd.set_userdata(args.user_data_json) 
 
     config_ll = cli.core.lgd.config.get('Legendary', 'log_level', fallback='info')
     if config_ll == 'debug' or args.debug:

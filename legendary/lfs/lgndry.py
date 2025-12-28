@@ -167,6 +167,9 @@ class LGDLFS:
             self.log.debug(f'Failed to load user data: {e!r}')
             return None
 
+    def set_userdata(self, userdata):
+        self._user_data = userdata
+
     @userdata.setter
     def userdata(self, userdata):
         raise NotImplementedError('The setter has been removed, use the locked userdata instead.')
