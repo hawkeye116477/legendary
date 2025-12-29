@@ -1,20 +1,24 @@
-name: Python
+name: Build Legendary
 
 on:
   push:
-    branches: [ '*' ]
+    tags:
+      - '*'
+  workflow_dispatch:
   pull_request:
     branches: [ '*' ]
 
 jobs:
   pyinstaller:
+    permissions:
+      contents: write
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
         os: [
           'ubuntu-22.04', 'ubuntu-22.04-arm',
           'windows-latest', 'windows-11-arm',
-          'macos-13', 'macos-14'
+          'macos-14'
         ]
       fail-fast: false
       max-parallel: 3
@@ -26,7 +30,7 @@ jobs:
       with:
         python-version: '3.12'
 
-    - name: Legendary dependencies and build tools
+    - name: Install dependencies and build tools
       run: pip3 install --upgrade
         setuptools
         pyinstaller
@@ -34,14 +38,14 @@ jobs:
         requests_futures
         filelock
 
-    - name: Optional dependencies (WebView)
+    - name: Install optional dependencies (WebView)
       run: pip3 install --upgrade pywebview
       if: runner.os != 'macOS'
 
     - name: Set strip option on non-Windows
       id: strip
-      run: echo "option=--strip" >> $GITHUB_OUTPUT
       if: runner.os != 'Windows'
+      run: echo "option=--strip" >> $GITHUB_OUTPUT
 
     - name: Build
       working-directory: legendary
@@ -58,3 +62,10 @@ jobs:
       with:
         name: ${{ matrix.os }}-package
         path: legendary/dist/*
+
+    - name: Upload binaries to release
+      if: startsWith(github.ref, 'refs/tags/')
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: ${{ github.ref_name }}
+        files: legendary/dist/*
