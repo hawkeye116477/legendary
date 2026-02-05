@@ -49,6 +49,7 @@ jobs:
 
     - name: Build
       working-directory: legendary
+      shell: bash
       run: |
         OS_NAME="$(echo "$RUNNER_OS" | tr '[:upper:]' '[:lower:]')"
         ARCH_RAW="$(uname -m 2>/dev/null || echo "$RUNNER_ARCH")"
@@ -57,7 +58,7 @@ jobs:
         --onefile \
         --name legendary_${OS_NAME}_${ARCH_NAME} \
         ${{ steps.strip.outputs.option }} \
-        -i ../assets/windows_icon.ico
+        -i ../assets/windows_icon.ico \
         cli.py
       env:
         PYTHONOPTIMIZE: 1
