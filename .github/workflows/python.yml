@@ -9,15 +9,15 @@ on:
     branches: [ '*' ]
 
 jobs:
-  pyinstaller:
+  build:
     permissions:
       contents: write
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
         os: [
-          'ubuntu-22.04', 'ubuntu-22.04-arm',
-          'windows-latest', 'windows-11-arm',
+          'ubuntu-22.04',
+          'windows-latest',
           'macos-14'
         ]
       fail-fast: false
@@ -49,10 +49,14 @@ jobs:
 
     - name: Build
       working-directory: legendary
-      run: pyinstaller
-        --onefile
-        --name legendary
-        ${{ steps.strip.outputs.option }}
+      run: |
+        OS_NAME="$(echo "$RUNNER_OS" | tr '[:upper:]' '[:lower:]')"
+        ARCH_RAW="$(uname -m 2>/dev/null || echo "$RUNNER_ARCH")"
+        ARCH_NAME="$(echo "$ARCH_RAW" | tr '[:upper:]' '[:lower:]')"
+        pyinstaller \
+        --onefile \
+        --name legendary_${OS_NAME}_${ARCH_NAME} \
+        ${{ steps.strip.outputs.option }} \
         -i ../assets/windows_icon.ico
         cli.py
       env:
@@ -60,12 +64,30 @@ jobs:
 
     - uses: actions/upload-artifact@v4
       with:
-        name: ${{ matrix.os }}-package
+        name: legendary-${{ matrix.os }}
         path: legendary/dist/*
+  
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - uses: actions/checkout@v4
 
-    # - name: Upload binaries to release
-    #   if: startsWith(github.ref, 'refs/tags/')
-    #   uses: softprops/action-gh-release@v2
-    #   with:
-    #     tag_name: ${{ github.ref_name }}
-    #     files: legendary/dist/*
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v7
+        with:
+          path: dist
+          
+      - name: Prepare files for release
+        run: |
+          mkdir -p release_files
+          find dist -type f -exec cp {} release_files/ \;
+          echo "Files prepared for release:"
+          ls -lh release_files
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: release_files/*
