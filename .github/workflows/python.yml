@@ -87,10 +87,14 @@ jobs:
     - run: cp zipapp_main.py build/__main__.py
 
     - name: Build
-      run: python -m zipapp
-        --output dist/legendary
-        --python "/usr/bin/env python3"
-        --compress
+      run: |
+        OS_NAME="$(echo "$RUNNER_OS" | tr '[:upper:]' '[:lower:]')"
+        ARCH_RAW="$(uname -m 2>/dev/null || echo "$RUNNER_ARCH")"
+        ARCH_NAME="$(echo "$ARCH_RAW" | tr '[:upper:]' '[:lower:]')"
+        python -m zipapp \
+        --output dist/legendary_${OS_NAME}_${ARCH_NAME} \
+        --python "/usr/bin/env python3" \
+        --compress \
         build
 
     - uses: actions/upload-artifact@v7
