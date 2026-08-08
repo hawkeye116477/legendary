@@ -149,7 +149,7 @@ class LGDLFS:
     @contextmanager
     def userdata_lock(self) -> LockedJSONData:
         """Wrapper around the lock to automatically update user data when it is released"""
-        with LockedJSONData(os.path.join(self.path, 'user.json')) as lock:
+        with LockedJSONData(os.path.join(self.path, 'current_user.json')) as lock:
             try:
                 yield lock
             finally:
