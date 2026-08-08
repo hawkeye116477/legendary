@@ -256,7 +256,7 @@ class LegendaryCore:
             return self._login(lock, force_refresh=force_refresh)
 
     def update_check_enabled(self):
-        return not self.lgd.config.getboolean('Legendary', 'disable_update_check', fallback=False)
+        return False
 
     def update_notice_enabled(self):
         if self.force_show_update:
