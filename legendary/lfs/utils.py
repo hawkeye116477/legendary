@@ -162,23 +162,19 @@ def clean_filename(filename):
 def get_dir_size(path):
     return sum(f.stat().st_size for f in Path(path).glob('**/*') if f.is_file())
 
-def get_names_for_keyring(current_user_info):
+def get_service_for_keyring(current_user_info):
     service_name = "legendary"
-    user_name = current_user_info["account_id"]
     if os.name == 'nt':
-        service_name = f"legendary:{current_user_info["account_id"]}"
-        user_name = None
-    return service_name, user_name
+        service_name = f"legendary/{current_user_info["account_id"]}"
+    return service_name
 
 def remove_encryption_key(current_user_info):
-    service_name, user_name = get_names_for_keyring(current_user_info)
-    keyring.delete_password(service_name, user_name)
+    keyring.delete_password(get_service_for_keyring(current_user_info), current_user_info["account_id"])
 
 def get_encryption_key(current_user_info):
     key = ""
     try:
-        service_name, user_name = get_names_for_keyring(current_user_info)
-        key = keyring.get_password(service_name, user_name)
+        key = keyring.get_password(get_service_for_keyring(current_user_info), current_user_info["account_id"])
     except Exception:
         if current_user_info["account_id"] is not None and current_user_info[key] is not None:
             key = base64.b64encode(hashlib.sha256((current_user_info["account_id"] + current_user_info[key]).encode("utf-8")).digest()).decode("utf-8")
@@ -210,7 +206,7 @@ def decrypt_file(path, current_user_info):
 def encrypt_to_file(path, current_user_info, data):
     encryption_key = base64.b64encode(os.urandom(32)).decode("utf-8")
     try:
-        service_name, user_name = get_names_for_keyring(current_user_info)
+        service_name = get_service_for_keyring(current_user_info)
         k_backend = keyring.core.get_keyring()
         if os.name == 'nt':
             k_backend.persist = 'local machine'
@@ -220,7 +216,7 @@ def encrypt_to_file(path, current_user_info, data):
             except keyring.errors.PasswordDeleteError:
                 pass
             finally:
-                k_backend.set_password(service_name, user_name, encryption_key)
+                k_backend.set_password(service_name, current_user_info["account_id"], encryption_key)
     except Exception:
         current_user_info['key'] = encryption_key
     final_encryption_key = get_encryption_key(current_user_info)
