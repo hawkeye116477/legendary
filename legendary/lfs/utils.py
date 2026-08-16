@@ -210,21 +210,23 @@ def decrypt_file(path, current_user_info):
         json_decrypted_data = None
     return json_decrypted_data
 
-def encrypt_to_file(path, current_user_info, data):
+def encrypt_to_file(path, current_user_info, data, store_key_file=False):
     final_encryption_key = get_encryption_key(current_user_info)
     if not final_encryption_key:
         encryption_key = base64.b64encode(os.urandom(32)).decode("utf-8")
-        try:
-            service_name = get_service_for_keyring(current_user_info)
-            k_backend = keyring.core.get_keyring()
-            if os.name == 'nt':
-                k_backend.persist = 'local machine'
-            if service_name is not None:
-                k_backend.set_password(service_name, current_user_info['account_id'], encryption_key)
-        except Exception:
-            current_user_info['key'] = encryption_key
-        finally:
-            final_encryption_key = get_encryption_key(current_user_info)
+        if not store_key_file:
+            try:
+                service_name = get_service_for_keyring(current_user_info)
+                k_backend = keyring.core.get_keyring()
+                if os.name == 'nt':
+                    k_backend.persist = 'local machine'
+                if service_name is not None:
+                    k_backend.set_password(service_name, current_user_info['account_id'], encryption_key)
+            except Exception:
+                store_key_file = True
+    if store_key_file:
+        current_user_info['key'] = encryption_key
+    final_encryption_key = get_encryption_key(current_user_info)
     iv_cipher = AES.new(final_encryption_key, AES.MODE_ECB)
     cipher = AES.new(final_encryption_key, AES.MODE_CBC)
     input_data = json.dumps(data).encode('utf-8')
@@ -236,66 +238,31 @@ def encrypt_to_file(path, current_user_info, data):
 
 
 class LockedJSONData(FileLock):
-    def __init__(self, lock_file: str):
+    def __init__(self, lock_file: str, save_changes: bool = True):
         super().__init__(lock_file + '.lock')
 
         self._file_path = lock_file
         self._data = None
-        self._user_data = None
         self._initial_data = None
+        self._save_changes = save_changes
 
     def __enter__(self):
         super().__enter__()
 
         if os.path.exists(self._file_path):
             with open(self._file_path, 'r', encoding='utf-8') as f:
-                try:
-                    self._user_data = json.load(f)
-                    self._initial_data = self._user_data
-                except json.JSONDecodeError:
-                    pass
-        if self._user_data and (account_id := self._user_data.get('account_id')) is not None:
-            data_file_path = os.path.join(os.path.dirname(self._file_path), f"{hashlib.md5(account_id.encode('utf-8')).hexdigest()}.enc")
-            if os.path.exists(data_file_path):
-                self._data = decrypt_file(data_file_path, self._user_data)
-        else:
-            # Migrate non-encrypted data
-            non_encrypted_path = os.path.join(os.path.dirname(self._file_path), "user.json")
-            if os.path.exists(non_encrypted_path):
-                with open(non_encrypted_path, "r", encoding='utf-8') as f:
-                    self._data = json.load(f)
-                os.remove(non_encrypted_path)
+                self._data = json.load(f)
+                self._initial_data = self._data
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         super().__exit__(exc_type, exc_val, exc_tb)
 
-        if self._user_data is None:
-            self._user_data = self._data
-        new_user_data = None
-        full_old_data = None
-        old_data_filename = None
-        if self._initial_data and (initial_account_id := self._initial_data.get('account_id')) is not None:
-            old_data_filename = f"{hashlib.md5(initial_account_id.encode('utf-8')).hexdigest()}.enc"
-
-        if self._user_data:
-            new_user_data = {}
-            if (account_id := self._user_data.get('account_id')) is not None:
-                new_user_data['account_id'] = account_id
-            if (display_name := self._user_data.get('displayName')) is not None:
-                new_user_data['displayName'] = display_name
-            if old_data_filename:
-                full_old_data = decrypt_file(os.path.join(os.path.dirname(self._file_path), old_data_filename), self._initial_data)
-
-        if full_old_data != self._data:
-            if self._user_data and self._data and (account_id := self._user_data.get('account_id')) is not None:
-                new_data_filename = f"{hashlib.md5(account_id.encode('utf-8')).hexdigest()}.enc"
-                new_user_data = encrypt_to_file(os.path.join(os.path.dirname(self._file_path), new_data_filename), new_user_data, self._data)
-
-        if self._initial_data != new_user_data:
-            if new_user_data:
+        
+        if self._data != self._initial_data and self._save_changes:
+            if self._data is not None:
                 with open(self._file_path, 'w', encoding='utf-8') as f:
-                    json.dump(new_user_data, f, indent=2, sort_keys=True)
+                    json.dump(self._data, f, indent=2, sort_keys=True)
             else:
                 if os.path.exists(self._file_path):
                     os.remove(self._file_path)
@@ -311,11 +278,4 @@ class LockedJSONData(FileLock):
         self._data = new_data
 
     def clear(self):
-        if self._user_data:
-            if (account_id := self._user_data.get('account_id')) is not None:
-                remove_encryption_key(self._user_data)
-                new_data_file = os.path.join(os.path.dirname(self._file_path),f"{hashlib.md5(account_id.encode('utf-8')).hexdigest()}.enc")
-                if os.path.exists(new_data_file):
-                    os.remove(new_data_file)
-            self._user_data = None
         self._data = None
