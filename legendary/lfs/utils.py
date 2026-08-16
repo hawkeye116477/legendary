@@ -248,8 +248,8 @@ class LockedJSONData(FileLock):
                     self._initial_data = self._user_data
                 except json.JSONDecodeError:
                     pass
-        if self._user_data is not None:
-            data_file_path = os.path.join(os.path.dirname(self._file_path), f"{hashlib.md5(self._user_data['account_id'].encode("utf-8")).hexdigest()}.enc")
+        if self._user_data and (account_id := self._user_data.get('account_id')) is not None:
+            data_file_path = os.path.join(os.path.dirname(self._file_path), f"{hashlib.md5(account_id.encode('utf-8')).hexdigest()}.enc")
             if os.path.exists(data_file_path):
                 self._data = decrypt_file(data_file_path, self._user_data)
         return self
@@ -262,23 +262,25 @@ class LockedJSONData(FileLock):
         new_user_data = None
         full_old_data = None
         old_data_filename = None
-        if self._initial_data is not None:
-            old_data_filename = f"{hashlib.md5(self._initial_data['account_id'].encode("utf-8")).hexdigest()}.enc"
+        if self._initial_data and (initial_account_id := self._initial_data.get('account_id')) is not None:
+            old_data_filename = f"{hashlib.md5(initial_account_id.encode('utf-8')).hexdigest()}.enc"
 
-        if self._user_data is not None:
+        if self._user_data:
             new_user_data = {}
-            new_user_data['account_id'] = self._user_data['account_id']
-            new_user_data['displayName'] = self._user_data['displayName']
-            if old_data_filename is not None:
+            if (account_id := self._user_data.get('account_id')) is not None:
+                new_user_data['account_id'] = account_id
+            if (display_name := self._user_data.get('displayName')) is not None:
+                new_user_data['displayName'] = display_name
+            if old_data_filename:
                 full_old_data = decrypt_file(os.path.join(os.path.dirname(self._file_path), old_data_filename), self._initial_data)
 
         if full_old_data != self._data:
-            if self._user_data is not None and self._data is not None:
-                new_data_filename = f"{hashlib.md5(self._user_data['account_id'].encode("utf-8")).hexdigest()}.enc"
+            if self._user_data and self._data and (account_id := self._user_data.get('account_id')) is not None:
+                new_data_filename = f"{hashlib.md5(account_id.encode('utf-8')).hexdigest()}.enc"
                 new_user_data = encrypt_to_file(os.path.join(os.path.dirname(self._file_path), new_data_filename), new_user_data, self._data)
 
-        if self._initial_data != new_user_data :
-            if new_user_data is not None:
+        if self._initial_data != new_user_data:
+            if new_user_data:
                 with open(self._file_path, 'w', encoding='utf-8') as f:
                     json.dump(new_user_data, f, indent=2, sort_keys=True)
             else:
@@ -296,10 +298,11 @@ class LockedJSONData(FileLock):
         self._data = new_data
 
     def clear(self):
-        if self._user_data is not None:
-            remove_encryption_key(self._user_data)
-            new_data_file = os.path.join(os.path.dirname(self._file_path),f"{hashlib.md5(self._user_data['account_id'].encode("utf-8")).hexdigest()}.enc")
-            if os.path.exists(new_data_file):
-                os.remove(new_data_file)
+        if self._user_data:
+            if (account_id := self._user_data.get('account_id')) is not None:
+                remove_encryption_key(self._user_data)
+                new_data_file = os.path.join(os.path.dirname(self._file_path),f"{hashlib.md5(account_id.encode('utf-8')).hexdigest()}.enc")
+                if os.path.exists(new_data_file):
+                    os.remove(new_data_file)
             self._user_data = None
         self._data = None
