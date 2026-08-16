@@ -1,9 +1,9 @@
-from hashlib import md5
 import json
 import logging
 import os
 from collections import defaultdict
 from contextlib import contextmanager
+from hashlib import md5
 from pathlib import Path
 from time import time
 
@@ -14,11 +14,12 @@ from legendary.models.game import Game, GameAsset, InstalledGame
 from legendary.utils.aliasing import generate_aliases
 from legendary.utils.env import is_windows_mac_or_pyi
 
-from .utils import LockedJSONData, clean_filename
 from .utils import (
+    LockedJSONData,
+    clean_filename,
     decrypt_file,
     encrypt_to_file,
-    remove_encryption_key
+    remove_encryption_key,
 )
 
 FILELOCK_DEBUG = False
