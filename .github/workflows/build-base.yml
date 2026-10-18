@@ -105,7 +105,7 @@ jobs:
         name: legendary-${{ matrix.os }}
         path: dist/legendary
   release:
-    needs: [build, zipapp]
+    needs: [pyinstaller, zipapp]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
     steps:
