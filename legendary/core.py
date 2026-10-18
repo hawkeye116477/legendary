@@ -294,18 +294,19 @@ class LegendaryCore:
                                               fallback=not is_windows_mac_or_pyi())
 
     def check_for_updates(self, force=False):
-        def version_tuple(v):
-            return tuple(map(int, (v.split('.'))))
+        return False
+        # def version_tuple(v):
+        #     return tuple(map(int, (v.split('.'))))
 
-        cached = self.lgd.get_cached_version()
-        version_info = cached['data']
-        if force or not version_info or (datetime.now().timestamp() - cached['last_update']) > 24*3600:
-            version_info = self.lgdapi.get_version_information()
-            self.lgd.set_cached_version(version_info)
+        # cached = self.lgd.get_cached_version()
+        # version_info = cached['data']
+        # if force or not version_info or (datetime.now().timestamp() - cached['last_update']) > 24*3600:
+        #     version_info = self.lgdapi.get_version_information()
+        #     self.lgd.set_cached_version(version_info)
 
-        web_version = version_info['release_info']['version']
-        self.update_available = version_tuple(web_version) > version_tuple(__version__)
-        self.apply_lgd_config(version_info)
+        # web_version = version_info['release_info']['version']
+        # self.update_available = version_tuple(web_version) > version_tuple(__version__)
+        # self.apply_lgd_config(version_info)
 
     def apply_lgd_config(self, version_info=None):
         """Applies configuration options returned by update API"""
