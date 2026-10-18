@@ -21,7 +21,6 @@ from uuid import uuid4
 from requests import session
 from requests.exceptions import ConnectionError, HTTPError
 
-from legendary import __version__
 from legendary.api.egs import EPCAPI
 from legendary.api.lgd import LGDAPI
 from legendary.downloader.mp.manager import DLManager
