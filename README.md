@@ -9,11 +9,6 @@ Its name as a tongue-in-cheek play on tiers of [item rarity in many MMORPGs](htt
 
 Please read the the [config file](#config-file) and [cli usage](#usage) sections before creating an issue to avoid invalid reports.
 
-If you run into any issues [ask for help on our Discord](https://legendary.gl/discord) or [create an issue on GitHub](https://github.com/derrod/legendary/issues/new/choose) so we can fix it!
-
-Finally, if you wish to support the project, please consider [buying me a coffee on Ko-Fi](https://ko-fi.com/derrod).
-Alternatively, if you've been considering picking up a copy of CrossOver you can use my [affiliate link](https://www.codeweavers.com/?ad=892) and discount code `LEGENDARY15` in their store.
-
 **Note:** Legendary is currently a CLI (command-line interface) application without a graphical user interface,
 it has to be run from a terminal (e.g. PowerShell)
 
@@ -45,23 +40,9 @@ it has to be run from a terminal (e.g. PowerShell)
 
 ## How to run/install
 
-### Package Manager (Linux)
-
-Several distros already have packages available, check out the [Available Linux Packages](https://github.com/derrod/legendary/wiki/Available-Linux-Packages) wiki page for details.
-
-Currently this includes
-[Arch](https://github.com/derrod/legendary/wiki/Available-Linux-Packages#arch-aur),
-[Fedora](https://github.com/derrod/legendary/wiki/Available-Linux-Packages#fedora),
-[openSUSE](https://github.com/derrod/legendary/wiki/Available-Linux-Packages#opensuse), and
-[Gentoo](https://github.com/derrod/legendary/wiki/Available-Linux-Packages#gentoo)
-but more will be available in the future.
-
-Note that since packages are maintained by third parties it may take a bit for them to be updated to the latest version.
-If you always want to have the latest features and fixes available then using the PyPI distribution is recommended.
-
 ### Prebuilt Standalone Binary (Windows, macOS, and Linux)
 
-Download the `legendary` or `legendary.exe` binary from [the latest release](https://github.com/derrod/legendary/releases/latest)
+Download the `legendary` or `legendary.exe` binary from [the latest release](https://github.com/hawkeye116477/legendary/releases/latest)
 and move it to somewhere in your `$PATH`/`%PATH%`. Don't forget to `chmod +x` it on Linux/macOS.
 
 The Windows .exe and Linux/macOS executable were created with PyInstaller and will run standalone even without python being installed.
@@ -75,31 +56,6 @@ To prevent problems with permissions during installation, please upgrade your `p
 
 > **Tip:** You may need to replace `python` in the above command with `python3` on Linux/macOS, or `py -3` on Windows.
 
-#### Installation from PyPI (recommended)
-
-Legendary is available on [PyPI](https://pypi.org/project/legendary-gl/), to install simply run:
-
-Note: `uv pip` may be used as a substitute to `pip` in the below commands
-
-```bash
-pip install legendary-gl
-```
-
-Optionally if logging in via an embedded web view is desired also run
-```bash
-pip install legendary-gl[webview]
-```
-On Linux this may also require installing a supported web engine and its python bindings.  
-Ubunutu example:
-```bash
-sudo apt install python3-gi-cairo
-pip install legendary-gl[webview]
-```
-
-Alternatively `pip install legendary-gl[webview_gtk]` or `pip install pywebview[gtk]` will work
-but may require manually installing dependencies needed to build `PyGObject`.
-
-**Note:** Using pywebview's Qt engine may not work correctly. Using pywebview is currently unsupported on macOS.
 
 #### Manually from the repo
 
@@ -112,7 +68,7 @@ but may require manually installing dependencies needed to build `PyGObject`.
 `uv` has various methods of installation. See <https://docs.astral.sh/uv/getting-started/installation/> and choose one.
 
 ````bash
-git clone https://github.com/derrod/legendary.git
+git clone https://github.com/hawkeye116477/legendary.git
 cd legendary
 uv sync --no-editable
 ````
