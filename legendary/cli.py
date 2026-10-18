@@ -5,11 +5,11 @@ import csv
 import json
 import logging
 import os
+import re
 import shlex
 import subprocess
 import time
 import webbrowser
-import re
 from collections import defaultdict, namedtuple
 from logging.handlers import QueueListener
 from multiprocessing import Queue as MPQueue

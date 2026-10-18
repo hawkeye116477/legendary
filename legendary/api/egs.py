@@ -2,13 +2,12 @@
 
 import logging
 import urllib.parse
-from urllib3.util import Retry
 
 import requests
 import requests.adapters
-from requests_futures.sessions import FuturesSession
-
 from requests.auth import HTTPBasicAuth
+from requests_futures.sessions import FuturesSession
+from urllib3.util import Retry
 
 from legendary.models.exceptions import InvalidCredentialsError
 from legendary.models.gql import (
